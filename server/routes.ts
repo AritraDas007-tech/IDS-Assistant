@@ -1,27 +1,24 @@
-
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
-import { api } from "@shared/routes"; // Import from shared/routes!
+import { api } from "@shared/routes";
 import { z } from "zod";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import Groq from "groq-sdk";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
-  // Initialize Gemini
-  // We'll check for the key lazily or just log a warning if missing
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  let genAI: GoogleGenerativeAI | null = null;
-  let model: any = null;
+  // Initialize Groq
+  const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-  if (GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    model = genAI.getGenerativeModel({ model: "gemini-pro" });
+  let groq: Groq | null = null;
+
+  if (GROQ_API_KEY) {
+    groq = new Groq({ apiKey: GROQ_API_KEY });
   } else {
-    console.warn("GEMINI_API_KEY is not set. Chatbot will respond with a placeholder.");
+    console.warn("GROQ_API_KEY is not set. Chatbot will respond with a placeholder.");
   }
 
   const SYSTEM_PROMPT = `
@@ -42,58 +39,57 @@ Security & Ethics:
 Tone: Professional, precise, and authoritative yet helpful.
 `;
 
+  // CHAT API
   app.post(api.chat.send.path, async (req, res) => {
     try {
       const input = api.chat.send.input.parse(req.body);
-      
+
       // Store user message
       await storage.createMessage({ content: input.message, isBot: false });
 
       let replyText = "";
 
-      if (model) {
+      if (groq) {
         try {
-          const chat = model.startChat({
-            history: [
-              {
-                role: "user",
-                parts: [{ text: SYSTEM_PROMPT }],
-              },
-              {
-                role: "model",
-                parts: [{ text: "Understood. I am SentinelBot, ready to assist with IDS tasks." }],
-              },
-            ],
-            generationConfig: {
-              maxOutputTokens: 500,
-            },
-          });
+          const completion = await groq.chat.completions.create({
+          model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+          messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: input.message },
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
+      });
 
-          const result = await chat.sendMessage(input.message);
-          const response = await result.response;
-          replyText = response.text();
+
+          replyText =
+            completion.choices[0]?.message?.content ||
+            "No response generated.";
         } catch (error: any) {
-          console.error("Gemini API Error:", error);
-          replyText = "Error communicating with AI service. Please check server logs.";
+          console.error("Groq API Error:", error);
+          replyText =
+            "Error communicating with Groq AI service. Please check server logs.";
         }
       } else {
-        replyText = "SentinelBot is offline. Please set the GEMINI_API_KEY environment variable to enable AI features.";
+        replyText =
+          "SentinelBot is offline. Please set the GROQ_API_KEY environment variable to enable AI features.";
       }
 
       // Store bot reply
       await storage.createMessage({ content: replyText, isBot: true });
 
       res.json({ reply: replyText });
-
     } catch (err) {
       if (err instanceof z.ZodError) {
         res.status(400).json({ message: "Invalid input" });
       } else {
+        console.error("Internal Server Error:", err);
         res.status(500).json({ message: "Internal server error" });
       }
     }
   });
 
+  // HISTORY API
   app.get(api.chat.history.path, async (req, res) => {
     const history = await storage.getMessages();
     res.json(history);

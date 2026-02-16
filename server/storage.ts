@@ -1,25 +1,34 @@
+export type Message = {
+  id: number;
+  content: string;
+  isBot: boolean;
+  createdAt: Date;
+};
 
-import { messages, type Message, type InsertMessage } from "@shared/schema";
-import { db } from "./db";
-import { eq } from "drizzle-orm";
+class MemoryStorage {
+  private messages: Message[] = [];
+  private currentId = 1;
 
-export interface IStorage {
-  getMessages(): Promise<Message[]>;
-  createMessage(message: InsertMessage): Promise<Message>;
-}
-
-export class DatabaseStorage implements IStorage {
   async getMessages(): Promise<Message[]> {
-    return await db.select().from(messages).orderBy(messages.timestamp);
+    return this.messages;
   }
 
-  async createMessage(insertMessage: InsertMessage): Promise<Message> {
-    const [message] = await db
-      .insert(messages)
-      .values(insertMessage)
-      .returning();
-    return message;
+  async createMessage(data: { content: string; isBot: boolean }): Promise<Message> {
+    const msg: Message = {
+      id: this.currentId++,
+      content: data.content,
+      isBot: data.isBot,
+      createdAt: new Date(),
+    };
+
+    this.messages.push(msg);
+    return msg;
+  }
+
+  async clearMessages(): Promise<void> {
+    this.messages = [];
+    this.currentId = 1;
   }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = new MemoryStorage();
